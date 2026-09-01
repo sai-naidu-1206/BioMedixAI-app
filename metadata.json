@@ -1,0 +1,6 @@
+{
+  "name": "BioMedixAI",
+  "description": "BioMedix AI: Multi-Modal Biomedical Intelligence & Genomic Architecture Analysis Suite.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

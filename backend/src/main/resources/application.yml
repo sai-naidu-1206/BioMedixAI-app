@@ -1,0 +1,37 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: biomedix-ai-backend
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/biomedix}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      idle-timeout: 30000
+      max-lifetime: 1800000
+      connection-timeout: 20000
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+biomedix:
+  api:
+    disgenet-base-url: "https://www.disgenet.org/api/gda/disease/"
+    string-db-base-url: "https://string-db.org/api/json/network"
+    uniprot-base-url: "https://rest.uniprot.org/uniprotkb/search"
+    rcsb-pdb-base-url: "https://files.rcsb.org/download/"
+    ncbi-entrez-base-url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+  security:
+    cors-allowed-origins: "http://localhost:3000,http://localhost:5173,https://ais-pre-4akmkxzgy5tlqssrmqltho-907874805471.asia-east1.run.app"
