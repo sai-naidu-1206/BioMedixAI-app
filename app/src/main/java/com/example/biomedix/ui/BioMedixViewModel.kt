@@ -38,6 +38,11 @@ data class UiState(
     val accessCodeInput: String = "",
     val isPasswordVisible: Boolean = false,
     val isRegistering: Boolean = false,
+    val isWaitingFor2FA: Boolean = false,
+    val isShowingQrCode: Boolean = false,
+    val qrCodeBitmap: android.graphics.Bitmap? = null,
+    val twoFactorCodeInput: String = "",
+    val generatedSecretKey: String? = null,
     val authError: String? = null,
 
     // Research Console Inputs
@@ -92,8 +97,6 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
     private val module2 = StructuralMLPipeline()
     private val module3 = CrisprSafetyEngine()
 
-    private val userDatabase = mutableMapOf("sai" to "123")
-
     val historyReports: StateFlow<List<CachedReportEntity>> = dao.getAllReports()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -101,6 +104,13 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     init {
+        // Pre-populate with default user in database
+        viewModelScope.launch {
+            val existing = dao.getUserByUsername("sai")
+            if (existing == null) {
+                dao.insertUser(com.example.biomedix.data.local.UserEntity("sai", "123", "JBSWY3DPEHPK3PXP"))
+            }
+        }
         parseFasta(_uiState.value.fastaInput)
     }
 
@@ -113,6 +123,10 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
         _uiState.value = _uiState.value.copy(accessCodeInput = code, authError = null)
     }
 
+    fun set2FACodeInput(code: String) {
+        _uiState.value = _uiState.value.copy(twoFactorCodeInput = code, authError = null)
+    }
+
     fun togglePasswordVisibility() {
         _uiState.value = _uiState.value.copy(isPasswordVisible = !_uiState.value.isPasswordVisible)
     }
@@ -120,6 +134,8 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
     fun toggleRegistrationMode() {
         _uiState.value = _uiState.value.copy(
             isRegistering = !_uiState.value.isRegistering,
+            isWaitingFor2FA = false,
+            isShowingQrCode = false,
             authError = null,
             usernameInput = "",
             accessCodeInput = ""
@@ -127,34 +143,92 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun initializeAccess() {
-        val user = _uiState.value.usernameInput.trim()
-        val code = _uiState.value.accessCodeInput.trim()
+        val state = _uiState.value
+        val user = state.usernameInput.trim()
+        val code = state.accessCodeInput.trim()
 
         if (user.isEmpty() || code.isEmpty()) {
             _uiState.value = _uiState.value.copy(authError = "Please enter both credentials")
             return
         }
 
-        if (_uiState.value.isRegistering) {
-            // Register
-            userDatabase[user] = code
-            _uiState.value = _uiState.value.copy(
-                isAuthenticated = true,
-                isRegistering = false,
-                authError = null
-            )
-        } else {
-            // Login
-            if (userDatabase[user] == code) {
-                _uiState.value = _uiState.value.copy(isAuthenticated = true, authError = null)
+        viewModelScope.launch {
+            if (state.isRegistering) {
+                // Register: Generate a secret key for Google Authenticator
+                val secret = AuthUtils.generateSecretKey()
+                val uri = AuthUtils.generateTotpUri(user, secret)
+                val qrBitmap = AuthUtils.generateQrCode(uri)
+                
+                // Save the account to our database permanently
+                dao.insertUser(com.example.biomedix.data.local.UserEntity(user, code, secret))
+                
+                _uiState.value = _uiState.value.copy(
+                    isRegistering = false,
+                    isWaitingFor2FA = true,
+                    isShowingQrCode = true,
+                    qrCodeBitmap = qrBitmap,
+                    generatedSecretKey = secret,
+                    authError = "Scan this QR code in Google Authenticator"
+                )
+            } else if (state.isWaitingFor2FA) {
+                // Verify TOTP Code
+                val totp = state.twoFactorCodeInput.trim()
+                val userAccount = dao.getUserByUsername(user)
+                
+                if (userAccount != null && AuthUtils.verifyTotp(userAccount.totpSecret, totp)) {
+                    _uiState.value = _uiState.value.copy(
+                        isAuthenticated = true,
+                        isWaitingFor2FA = false,
+                        isShowingQrCode = false,
+                        authError = null
+                    )
+                } else {
+                    _uiState.value = _uiState.value.copy(authError = "Invalid verification code")
+                }
             } else {
-                _uiState.value = _uiState.value.copy(authError = "ACCESS DENIED: Invalid Credentials")
+                // Step 1: Login Check against Database
+                val userAccount = dao.getUserByUsername(user)
+                if (userAccount != null && userAccount.accessCode == code) {
+                    // Password correct, proceed to 2FA challenge
+                    _uiState.value = _uiState.value.copy(
+                        isWaitingFor2FA = true,
+                        isShowingQrCode = false,
+                        generatedSecretKey = userAccount.totpSecret,
+                        authError = "Enter Authenticator Code"
+                    )
+                } else {
+                    _uiState.value = _uiState.value.copy(authError = "ACCESS DENIED: Invalid Credentials")
+                }
             }
         }
     }
 
     fun logout() {
-        _uiState.value = _uiState.value.copy(isAuthenticated = false)
+        _uiState.value = _uiState.value.copy(
+            isAuthenticated = false,
+            usernameInput = "",
+            accessCodeInput = "",
+            twoFactorCodeInput = "",
+            isWaitingFor2FA = false,
+            isShowingQrCode = false
+        )
+    }
+
+    fun resetInputs() {
+        _uiState.value = _uiState.value.copy(
+            diseaseInput = "",
+            grnaInput = "",
+            fastaInput = "",
+            targetCompleted = false,
+            drugCompleted = false,
+            crisprCompleted = false,
+            completeCompleted = false,
+            diseaseBurdenPercentage = 100,
+            activeOutputCard = null,
+            outputFormattedJson = "",
+            outputTitle = "",
+            outputSubtitle = null
+        )
     }
 
     // --- Research Console Controls ---
@@ -214,27 +288,13 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
                 return@launch
             }
 
-            // Construct JSON format seen in video
-            val centralityJson = hubResult.centralityScores.entries.joinToString(", ") {
-                "\"${it.key}\": ${it.value}"
-            }
-            val nodesJson = hubResult.candidateGenes.joinToString(", ") { "\"${it.symbol}\"" }
             val formatted = """
-{
-  "report_id": ${(10..99).random()},
-  "disease_name": "$disease",
-  "organism": "${_uiState.value.modelOrganism}",
-  "hub_result": {
-    "disease_name": "$disease",
-    "hub_gene_symbol": "${hubResult.hubGeneSymbol}",
-    "centrality_scores": { $centralityJson },
-    "graph_summary": {
-      "num_nodes": ${hubResult.candidateGenes.size},
-      "num_edges": ${hubResult.ppiEdges.size},
-      "nodes": [ $nodesJson ]
-    }
-  }
-}
+REPORT_ID : ${(10..99).random()}
+DISEASE : $disease
+ORGANISM : ${_uiState.value.modelOrganism}
+HUB_GENE : ${hubResult.hubGeneSymbol}
+NUM_NODES : ${hubResult.candidateGenes.size}
+NUM_EDGES : ${hubResult.ppiEdges.size}
             """.trimIndent()
 
             _uiState.value = _uiState.value.copy(
@@ -260,23 +320,14 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
             val drugResult = module2.run(hubResult.hubGeneSymbol)
 
             val formatted = """
-{
-  "report_id": ${(10..99).random()},
-  "disease_name": "$disease",
-  "hub_gene": "${hubResult.hubGeneSymbol}",
-  "druggability_result": {
-    "gene_symbol": "${drugResult.geneSymbol}",
-    "pdb_id": "${drugResult.pdbId}",
-    "druggability_score": ${drugResult.druggabilityScore},
-    "pocket_features": {
-      "volume_angstrom3": ${drugResult.pocketFeatures?.pocketVolume ?: 890f},
-      "hydrophobicity": ${drugResult.pocketFeatures?.hydrophobicityRatio ?: 0.52f},
-      "depth": ${drugResult.pocketFeatures?.depth ?: 14.5f},
-      "lining_residues": ${drugResult.pocketFeatures?.liningResidueCount ?: 24}
-    }
-  },
-  "verdict": "${if (drugResult.druggabilityScore >= 0.7f) "High Small-Molecule Druggability Candidate" else "Moderate Small-Molecule Druggability"}"
-}
+REPORT_ID : ${(10..99).random()}
+DISEASE : $disease
+HUB_GENE : ${hubResult.hubGeneSymbol}
+PDB_ID : ${drugResult.pdbId}
+DRUGGABILITY : ${drugResult.druggabilityScore}
+POCKET_VOL : ${drugResult.pocketFeatures?.pocketVolume ?: 890f} Å³
+HYDROPHOBICITY : ${drugResult.pocketFeatures?.hydrophobicityRatio ?: 0.52f}
+VERDICT : ${if (drugResult.druggabilityScore >= 0.7f) "High Candidate" else "Moderate Candidate"}
             """.trimIndent()
 
             _uiState.value = _uiState.value.copy(
@@ -299,8 +350,8 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
         if (disease.isBlank() || grna.isBlank()) {
             _uiState.value = _uiState.value.copy(
                 activeOutputCard = "CRISPR_MISSING",
-                outputTitle = "chuskoni chai rahh",
-                outputSubtitle = "Enter a guide RNA for CRISPR analysis.",
+                outputTitle = "Input Required",
+                outputSubtitle = "Enter a guide RNA sequence for CRISPR analysis.",
                 outputFormattedJson = ""
             )
             return
@@ -312,24 +363,14 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
             val hubResult = module1.run(disease, _uiState.value.parameters)
             val crisprResult = module3.evaluate(hubResult.hubGeneSymbol, grna)
 
-            val flaggedJson = crisprResult.flaggedSites.joinToString(",\n    ") { site ->
-                """{"site_id": "${site.siteId}", "target_sequence": "${site.targetSequence}", "mismatches": ${site.mismatchCount}, "risk_score": ${site.riskScore}, "pam": "${site.pam}"}"""
-            }
-
             val formatted = """
-{
-  "report_id": ${(10..99).random()},
-  "disease_name": "$disease",
-  "crispr_result": {
-    "gene_symbol": "${hubResult.hubGeneSymbol}",
-    "grna_sequence": "$grna",
-    "safety_score": ${crisprResult.safetyScore},
-    "total_sites_scanned": ${crisprResult.totalSitesScanned},
-    "flagged_sites": [
-    $flaggedJson
-    ]
-  }
-}
+REPORT_ID : ${(10..99).random()}
+DISEASE : $disease
+GENE_SYMBOL : ${hubResult.hubGeneSymbol}
+GRNA_SEQ : $grna
+SAFETY_SCORE : ${crisprResult.safetyScore}
+SITES_SCANNED : ${crisprResult.totalSitesScanned}
+FLAGGED_SITES : ${crisprResult.flaggedSites.size}
             """.trimIndent()
 
             _uiState.value = _uiState.value.copy(
@@ -389,9 +430,6 @@ class BioMedixViewModel(application: Application) : AndroidViewModel(application
                 )
             )
 
-            val centralityJson = report.hubResult.centralityScores.entries.joinToString(", ") {
-                "\"${it.key}\": ${it.value}"
-            }
             val formatted = """
 REPORT_ID : ${(10..99).random()}
 DISEASE : $disease

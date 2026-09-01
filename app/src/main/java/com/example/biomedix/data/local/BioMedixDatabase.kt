@@ -28,6 +28,13 @@ data class CachedReportEntity(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "users")
+data class UserEntity(
+    @PrimaryKey val username: String,
+    val accessCode: String,
+    val totpSecret: String
+)
+
 @Dao
 interface BioMedixDao {
     @Query("SELECT * FROM pipeline_reports ORDER BY timestamp DESC")
@@ -39,6 +46,12 @@ interface BioMedixDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReport(report: CachedReportEntity): Long
 
+    @Query("SELECT * FROM users WHERE username = :username LIMIT 1")
+    suspend fun getUserByUsername(username: String): UserEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertUser(user: UserEntity)
+
     @Query("DELETE FROM pipeline_reports WHERE id = :id")
     suspend fun deleteReport(id: Long)
 
@@ -46,7 +59,7 @@ interface BioMedixDao {
     suspend fun clearAll()
 }
 
-@Database(entities = [CachedReportEntity::class], version = 1, exportSchema = false)
+@Database(entities = [CachedReportEntity::class, UserEntity::class], version = 2, exportSchema = false)
 abstract class BioMedixDatabase : RoomDatabase() {
     abstract fun dao(): BioMedixDao
 
